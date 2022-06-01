@@ -230,6 +230,7 @@ def enrich_radar_data(radar_data):
     v = np.array([radar_data[8,:], radar_data[9,:]]) # Create the speed vector
     vrad_comp = np.sum(v*radial, axis=0, keepdims=True) # Project the speed component onto this vector
 
+
     data_collections = [
         radar_data,
         dist,

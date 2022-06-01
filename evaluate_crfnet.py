@@ -20,7 +20,7 @@ import os
 import sys
 
 # Third party imports
-
+import tensorflow as tf
 import keras.preprocessing.image
 import numpy as np
 import matplotlib.pyplot as plt 
@@ -44,7 +44,7 @@ from crfnet.utils.anchor_calc import compute_overlap
 from crfnet.utils.anchor_parameters import AnchorParameters
 from crfnet.utils.helpers import makedirs
 from crfnet.data_processing.generator.crf_main_generator import create_generators
-
+tf.compat.v1.disable_eager_execution()
 
 if __name__ == '__main__':
 

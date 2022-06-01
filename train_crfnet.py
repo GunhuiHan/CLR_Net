@@ -300,8 +300,7 @@ def main():
     if 'nuscenes' in cfg.data_set:
         train_generator, validation_generator, test_generator, test_night_generator, test_rain_generator = create_generators(cfg, backbone)
     else:
-        train_generator, validation_generator = create_generators(cfg, backbone)
-    
+        train_generator, validation_generator = create_generators(cfg, backbone)    
 
     # create the model
     weights = None

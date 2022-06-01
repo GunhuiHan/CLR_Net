@@ -215,7 +215,7 @@ def _create_vertical_line(P1, P2, img):
 
     return itbuffer
 
-def _radar2camera(image_data, radar_data, radar_xyz_endpoints, clear_radar=False):
+def _radar_and_lidar_2camera(image_data, radar_data, radar_xyz_endpoints, lidar_data, clear_radar=False, clear_lidar = True):
     """
     
     Calculates a line of two radar points and puts the radar_meta data as additonal layers to the image -> image_plus
@@ -231,10 +231,15 @@ def _radar2camera(image_data, radar_data, radar_xyz_endpoints, clear_radar=False
     """
 
     radar_meta_count = radar_data.shape[0]-3
+    lidar_meta_count = lidar_data.shape[0]
     radar_extension = np.zeros(
         (image_data.shape[0], image_data.shape[1], radar_meta_count), dtype=np.float32)
+    lidar_extension = np.zeros(
+        (image_data.shape[0], image_data.shape[1], lidar_meta_count), dtype=np.float32)    
     no_of_points = radar_data.shape[1]
+    no_of_points_lidar = lidar_data.shape[1]
 
+    # radar
     if clear_radar:
         pass # we just don't add it to the image
     else:
@@ -250,8 +255,15 @@ def _radar2camera(image_data, radar_data, radar_xyz_endpoints, clear_radar=False
                 if not np.any(radar_extension[y, x]) or radar_data[-1, radar_point] < radar_extension[y, x, -1]:
                     radar_extension[y, x] = radar_data[3:, radar_point]
 
+    # lidar
+    if clear_lidar:
+        pass # we just don't add it to the image
+    else:
+        for lidar_point in range(0, no_of_points_lidar):
+            lidar_extension[y, x] = lidar_data[:, lidar_point]
+                    
 
-    image_plus = np.concatenate((image_data, radar_extension), axis=2)
+    image_plus = np.concatenate((image_data, radar_extension, lidar_extension), axis=2)
 
     return image_plus
 
@@ -299,6 +311,109 @@ def view_points(points: np.ndarray, view: np.ndarray, normalize: bool):
 
     output[0:3,:] = points
     return output
+
+def map_pointcloud_to_image_lidar(nusc, lidar_points, pointsensor_token, camera_token, target_resolution=(None,None)): #added
+    """
+    Given a point sensor (lidar/radar) token and camera sample_data token, load point-cloud and map it to the image
+    plane.
+    :param radar_pints: [list] list of radar points
+    :param pointsensor_token: [str] Lidar/radar sample_data token.
+    :param camera_token: [str] Camera sample_data token.
+    :param target_resolution: [tuple of int] determining the output size for the radar_image. None for no change
+
+    :return (points <np.float: 2, n)
+    """
+
+    # Initialize the database
+    cam = nusc.get('sample_data', camera_token)
+    pointsensor = nusc.get('sample_data', pointsensor_token)
+
+    pc = PointCloud(lidar_points)
+
+    # Points live in the point sensor frame. So they need to be transformed via global to the image plane.
+    # First step: transform the point-cloud to the ego vehicle frame for the timestamp of the sweep.
+    cs_record = nusc.get('calibrated_sensor', pointsensor['calibrated_sensor_token'])
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix)
+    pc.translate(np.array(cs_record['translation']))
+
+    # Second step: transform to the global frame.
+    poserecord = nusc.get('ego_pose', pointsensor['ego_pose_token'])
+    pc.rotate(Quaternion(poserecord['rotation']).rotation_matrix)
+    pc.translate(np.array(poserecord['translation']))
+
+    # Third step: transform into the ego vehicle frame for the timestamp of the image.
+    poserecord = nusc.get('ego_pose', cam['ego_pose_token'])
+    pc.translate(-np.array(poserecord['translation']))
+    pc.rotate(Quaternion(poserecord['rotation']).rotation_matrix.T)
+
+    # Fourth step: transform into the camera.
+    cs_record = nusc.get('calibrated_sensor', cam['calibrated_sensor_token'])
+    pc.translate(-np.array(cs_record['translation']))
+    pc.rotate(Quaternion(cs_record['rotation']).rotation_matrix.T)
+
+    # Fifth step: actually take a "picture" of the point cloud.
+    # Grab the depths (camera frame z axis points away from the camera).
+
+    # intrinsic_resized = np.matmul(camera_resize, np.array(cs_record['camera_intrinsic']))
+    view = np.array(cs_record['camera_intrinsic'])
+    # Take the actual picture (matrix multiplication with camera-matrix + renormalization).
+    points = view_points(pc.points, view, normalize=True) #resize here
+
+    # Resizing to target resolution
+    if target_resolution[1]: # resizing width
+        points[0,:] *= (target_resolution[1]/cam['width'])
+
+    if target_resolution[0]: # resizing height
+        points[1,:] *= (target_resolution[0]/cam['height'])
+
+    # actual_resolution = (cam['height'], cam['width'])
+    # for i in range(len(target_resolution)):
+    #     if target_resolution[i]:
+    #         points[i,:] *= (target_resolution[i]/actual_resolution[i])
+
+    return points
+
+def create_spatial_point_array_lidar(nusc, lidar_data, pointsensor_token, camera_token, target_width=None): #added
+    """
+    This function turns a lidar point cloud into a 1-D array by encoding the spatial information.
+    The position in the array reflects the direction of the lidar point with respect to a camera.
+
+    :param nusc: [nuscenes.nuscenes.Nuscenes] nuScenes database
+    :param target_width: [int] the target resolution along x-axis for the output array
+    :param dim: dimensionality of the target array
+    """
+    ##########################
+    ##### Initialization #####
+    ##########################
+    lidar_meta_count = lidar_data.shape[0] - 3 # -3 for substracting the image positions x y z 
+    img_data = nusc.get('sample_data', camera_token)
+    target_width = target_width or img_data['width']
+    target_resolution = (1, target_width)
+    lidar_array = np.zeros((*target_resolution, lidar_meta_count))
+
+    ######################################
+    ##### Perform the array creation #####
+    ######################################
+    # Get lidar points with x and y coordinates
+    projected_lidar_points = map_pointcloud_to_image_lidar(nusc, lidar_data, pointsensor_token=pointsensor_token, \
+        camera_token=camera_token, target_resolution=target_resolution)
+
+    for i in range(projected_lidar_points.shape[1]):
+        x,y = projected_lidar_points[0:2,i].astype(np.int32) # first 
+        if x < 0 or x >= target_width:
+            continue # we skip this point, because it lies outside of the image
+        y = 0 # Set height to zero in case the point is outside of the image
+        lidar_array[y,x] = projected_lidar_points[3:,i]
+
+
+    ################################
+    ##### Postprocess the data #####
+    ################################
+    # Remove x,y,z from radar data
+    # radar_array = radar_array[3:,:]
+
+    return lidar_array
+
 
 def map_pointcloud_to_image(nusc, radar_points, pointsensor_token, camera_token, target_resolution=(None,None)):
     """
@@ -402,7 +517,7 @@ def create_spatial_point_array(nusc, radar_data, pointsensor_token, camera_token
 
     return radar_array
 
-def imageplus_creation(nusc, image_data, radar_data, pointsensor_token, camera_token, height=(0,3),  \
+def imageplus_creation(nusc, image_data, radar_data, lidar_data, pointsensor_token, lidar_token, camera_token, height=(0,3),  \
         image_target_shape=(900, 1600), clear_radar=False, clear_image=False):
     """
     Superordinate function that creates image_plus data of raw camera and radar data
@@ -480,7 +595,8 @@ def imageplus_creation(nusc, image_data, radar_data, pointsensor_token, camera_t
 
     # Get radar points with the desired height and radar meta data
     radar_points, radar_xyz_endpoint = _radar_transformation(radar_data, height)
-
+    lidar_points = lidar_data
+    
     #######################
     ##### Filter Data #####
     #######################
@@ -495,12 +611,14 @@ def imageplus_creation(nusc, image_data, radar_data, pointsensor_token, camera_t
     radar_points = map_pointcloud_to_image(nusc, radar_points, pointsensor_token=pointsensor_token, camera_token=camera_token, target_resolution=image_target_shape)
     radar_xyz_endpoint = map_pointcloud_to_image(nusc, radar_xyz_endpoint, pointsensor_token=pointsensor_token, camera_token=camera_token, target_resolution=image_target_shape)
     
+    lidar_points = map_pointcloud_to_image_lidar(nusc, lidar_points, pointsensor_token=lidar_token, camera_token=camera_token, target_resolution=image_target_shape)
+
     if barcode:
         radar_points[1,:] = image_data.shape[0]
         radar_xyz_endpoint[1,:] = 0
 
     # Create image plus by creating projection lines and store them as additional channels in the image
-    image_plus = _radar2camera(cur_img, radar_points, radar_xyz_endpoint, clear_radar=clear_radar)
+    image_plus = _radar_and_lidar_2camera(cur_img, radar_points, radar_xyz_endpoint, lidar_points, clear_radar=clear_radar)
 
     #########################
     ##### Quality Check #####
@@ -655,6 +773,7 @@ if __name__ == '__main__':
     # Specify sensors to use
     radar_channel = 'RADAR_FRONT'
     camera_channel = 'CAM_FRONT'
+    lidar_channel = 'LIDAR_TOP' #added
 
     # Get all scene tokens in a list
     scene_tokens = [s['token'] for s in nusc.scene]
@@ -674,11 +793,12 @@ if __name__ == '__main__':
     # Grab the front camera and the radar sensor.
     radar_token = sample_record['data'][radar_channel]
     camera_token = sample_record['data'][camera_channel]
-
+    lidar_token = sample_record['data'][lidar_channel]
 
     # Get radar and image data
     radar_data = get_sensor_sample_data(nusc, sample, radar_channel)
     image_data = get_sensor_sample_data(nusc, sample, camera_channel)
+    lidar_data = get_sensor_sample_data(nusc, sample, lidar_channel)
 
 
     ## Define parameters for image_plus_creation
@@ -695,7 +815,7 @@ if __name__ == '__main__':
     # Call the main function to obtain image_plus_data
 
     image_plus_data = imageplus_creation(nusc,
-        image_data, radar_data, radar_token, camera_token, height, image_target_shape, clear_radar=False, clear_image=False)
+        image_data, radar_data, lidar_data, radar_token, lidar_token, camera_token, height, image_target_shape, clear_radar=False, clear_image=False)
 
  
     # Visualize the result

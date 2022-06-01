@@ -1,3 +1,5 @@
+LICENSE
+README.md
 setup.py
 crfnet.egg-info/PKG-INFO
 crfnet.egg-info/SOURCES.txt

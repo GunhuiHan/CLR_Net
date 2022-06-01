@@ -14,6 +14,7 @@ from keras.layers import Lambda, Concatenate
 import keras.backend as K
 import keras
 
+
 @keras_modules_injection
 def custom(*args, **kwargs):
     return vggmax(*args, **kwargs)
@@ -135,14 +136,14 @@ def vggmax(include_top=True,
                                       require_flatten=include_top,
                                       weights=weights)
 
+
     if input_tensor is None:
         all_input = layers.Input(shape=input_shape)
     else:
         if not backend.is_keras_tensor(input_tensor):
             all_input = layers.Input(tensor=input_tensor, shape=input_shape)
         else:
-            all_input = input_tensor
-    
+            all_input = input_tensor #vvv
     ## Read config variables
     fusion_blocks = cfg.fusion_blocks
 
@@ -152,12 +153,14 @@ def vggmax(include_top=True,
     # Seperate input
     if len(cfg.channels) > 3:
         image_input = Lambda(lambda x: x[:, :, :, :3], name='image_channels')(all_input)
-        radar_input = Lambda(lambda x: x[:, :, :, 3:], name='radar_channels')(all_input)
-    
+        radar_input = Lambda(lambda x: x[:, :, :, 3:5], name='radar_channels')(all_input)
+        lidar_input = Lambda(lambda x: x[:, :, :, 5:], name='lidar_channels')(all_input) #added
+
+
     # Bock 0 Fusion
     if len(cfg.channels) > 3:
         if 0 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_0')([image_input, radar_input])
+            x = Concatenate(axis=3, name='concat_0')([image_input, radar_input, lidar_input])
         else:
             x = image_input
     else:
@@ -177,24 +180,32 @@ def vggmax(include_top=True,
     else:
         x = layers.MaxPooling2D((2, 2), strides=(2, 2), name='block1_pool')(x)
 
-    # Block 1 - Radar
+    # Block 1 - Radar & Lidar
     if len(cfg.channels) > 3:
         if cfg.pooling == 'min':
             y = Lambda(min_pool2d,  name='rad_block1_pool')(radar_input)
+            z = Lambda(min_pool2d,  name='lid_block1_pool')(lidar_input)
         elif cfg.pooling == 'maxmin':
             y = Lambda(min_max_pool2d, name='rad_block1_pool')(radar_input)
+            z = Lambda(min_max_pool2d,  name='lid_block1_pool')(lidar_input)
         elif cfg.pooling == 'conv':
             y = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
                             activation='relu',
                             padding='same',
                             strides=(2, 2),
                             name='rad_block1_pool')(radar_input)
+            z = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
+                            activation='relu',
+                            padding='same',
+                            strides=(2, 2),
+                            name='lid_block1_pool')(lidar_input)
         else:
             y = layers.MaxPooling2D((2, 2), strides=(2, 2), name='rad_block1_pool')(radar_input)
+            z = layers.MaxPooling2D((2, 2), strides=(2, 2), name='lid_block1_pool')(lidar_input)
         
-        ## Concatenate Block 1 Radar to image
+        ## Concatenate Block 1 Radar & Lidar to image
         if 1 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_1')([x, y])
+            x = Concatenate(axis=3, name='concat_1')([x, y, z])
 
 
     # Block 2
@@ -210,25 +221,34 @@ def vggmax(include_top=True,
         x = Lambda(min_max_pool2d, name='block2_pool')(x)
     else:
         x = layers.MaxPooling2D((2, 2), strides=(2, 2), name='block2_pool')(x)
+       
 
-    # Block 2 - Radar
+    # Block 2 - Radar & Lidar
     if len(cfg.channels) > 3:
         if cfg.pooling == 'min':
             y = Lambda(min_pool2d,  name='rad_block2_pool')(y)
+            z = Lambda(min_pool2d,  name='lid_block2_pool')(z)
         elif cfg.pooling == 'maxmin':
             y = Lambda(min_max_pool2d, name='rad_block2_pool')(y)
+            z = Lambda(min_max_pool2d, name='lid_block2_pool')(z)
         elif cfg.pooling == 'conv':
             y = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
                             activation='relu',
                             padding='same',
                             strides=(2, 2),
                             name='rad_block2_pool')(y)
+            z = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
+                            activation='relu',
+                            padding='same',
+                            strides=(2, 2),
+                            name='lid_block2_pool')(y)
         else:
             y = layers.MaxPooling2D((2, 2), strides=(2, 2), name='rad_block2_pool')(y)
+            z = layers.MaxPooling2D((2, 2), strides=(2, 2), name='lid_block2_pool')(z)
         
-        ## Concatenate Block 2 Radar to image
+        ## Concatenate Block 2 Radar & Lidar to image
         if 2 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_2')([x, y])
+            x = Concatenate(axis=3, name='concat_2')([x, y, z])
 
     # Block 3
     x = layers.Conv2D(int(256*cfg.network_width), (3, 3),
@@ -248,24 +268,32 @@ def vggmax(include_top=True,
     else:
         x = layers.MaxPooling2D((2, 2), strides=(2, 2), name='block3_pool')(x)
 
-    # Block 3 - Radar
+    # Block 3 - Radar & Lidar
     if len(cfg.channels) > 3:
         if cfg.pooling == 'min':
             y = Lambda(min_pool2d,  name='rad_block3_pool')(y)
+            z = Lambda(min_pool2d,  name='lid_block3_pool')(z)
         elif cfg.pooling == 'maxmin':
             y = Lambda(min_max_pool2d, name='rad_block3_pool')(y)
+            z = Lambda(min_max_pool2d,  name='lid_block3_pool')(z)
         elif cfg.pooling == 'conv':
             y = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
                             activation='relu',
                             padding='same',
                             strides=(2, 2),
                             name='rad_block3_pool')(y)
+            z = layers.Conv2D(int(64 * cfg.network_width), (3, 3),
+                            activation='relu',
+                            padding='same',
+                            strides=(2, 2),
+                            name='lid_block3_pool')(z)
         else:
             y = layers.MaxPooling2D((2, 2), strides=(2, 2), name='rad_block3_pool')(y)
+            z = layers.MaxPooling2D((2, 2), strides=(2, 2), name='lid_block3_pool')(z)
         
-        ## Concatenate Block 3 Radar to image
+        ## Concatenate Block 3 Radar & Lidar to image
         if 3 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_3')([x, y])
+            x = Concatenate(axis=3, name='concat_3')([x, y, z])
 
 
     # Block 4
@@ -286,24 +314,32 @@ def vggmax(include_top=True,
     else:
         x = layers.MaxPooling2D((2, 2), strides=(2, 2), name='block4_pool')(x)
 
-    # Block 4 - Radar
+    # Block 4 - Radar & Lidar
     if len(cfg.channels) > 3:
         if cfg.pooling == 'min':
             y = Lambda(min_pool2d,  name='rad_block4_pool')(y)
+            z = Lambda(min_pool2d,  name='lid_block4_pool')(z)
         elif cfg.pooling == 'maxmin':
             y = Lambda(min_max_pool2d, name='rad_block4_pool')(y)
+            z = Lambda(min_max_pool2d, name='lid_block4_pool')(z)
         elif cfg.pooling == 'conv':
             y = layers.Conv2D(int(64 * cfg.network_width), (2, 2),
                             activation='relu',
                             padding='valid',
                             strides=(2, 2),
                             name='rad_block4_pool')(y)
+            z = layers.Conv2D(int(64 * cfg.network_width), (2, 2),
+                            activation='relu',
+                            padding='valid',
+                            strides=(2, 2),
+                            name='lid_block4_pool')(z)
         else:
             y = layers.MaxPooling2D((2, 2), strides=(2, 2), name='rad_block4_pool')(y)
+            z = layers.MaxPooling2D((2, 2), strides=(2, 2), name='lid_block4_pool')(z)
         
-        ## Concatenate Block 4 Radar to image
+        ## Concatenate Block 4 Radar & Lidar to image
         if 4 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_4')([x, y])
+            x = Concatenate(axis=3, name='concat_4')([x, y, z])
 
     # Block 5
     x = layers.Conv2D(int(512*cfg.network_width), (3, 3),
@@ -320,24 +356,32 @@ def vggmax(include_top=True,
                       name='block5_conv3')(x)
     x = layers.MaxPooling2D((2, 2), strides=(2, 2), name='block5_pool')(x)
 
-    # Block 5 - Radar
+    # Block 5 - Radar & Lidar
     if len(cfg.channels) > 3:
         if cfg.pooling == 'min':
             y = Lambda(min_pool2d,  name='rad_block5_pool')(y)
+            z = Lambda(min_pool2d,  name='lid_block5_pool')(z)
         elif cfg.pooling == 'maxmin':
             y = Lambda(min_max_pool2d, name='rad_block5_pool')(y)
+            z = Lambda(min_max_pool2d, name='lid_block5_pool')(z)
         elif cfg.pooling == 'conv':
             y = layers.Conv2D(int(64 * cfg.network_width), (2, 2),
                             activation='relu',
                             padding='valid',
                             strides=(2, 2),
                             name='rad_block5_pool')(y)
+            z = layers.Conv2D(int(64 * cfg.network_width), (2, 2),
+                            activation='relu',
+                            padding='valid',
+                            strides=(2, 2),
+                            name='lid_block5_pool')(z)
         else:
             y = layers.MaxPooling2D((2, 2), strides=(2, 2), name='rad_block5_pool')(y)
+            z = layers.MaxPooling2D((2, 2), strides=(2, 2), name='lid_block5_pool')(z)
         
-        ## Concatenate Block 5 Radar to image
+        ## Concatenate Block 5 Radar & Lidar to image
         if 5 in fusion_blocks:
-            x = Concatenate(axis=3, name='concat_5')([x, y])
+            x = Concatenate(axis=3, name='concat_5')([x, y, z])
 
 
     if include_top:

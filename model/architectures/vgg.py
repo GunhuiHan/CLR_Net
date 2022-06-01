@@ -82,10 +82,13 @@ def vgg_retinanet(num_classes, backbone='vgg16', inputs=None, modifier=None, dis
     Returns
         RetinaNet model with a VGG backbone.
     """
+
     # choose default input
     if inputs is None:
+        print("inputs is None")
         inputs = keras.layers.Input(shape=(None, None, 3))
     elif isinstance(inputs, tuple):
+        print("inputs is not None")
         inputs = keras.layers.Input(inputs)
         
     # create the vgg backbone
@@ -116,6 +119,9 @@ def vgg_retinanet(num_classes, backbone='vgg16', inputs=None, modifier=None, dis
     layer_outputs = [vgg.get_layer(name).output for name in layer_names]
 
     radar_names = ["rad_block1_pool", "rad_block2_pool", "rad_block3_pool", "rad_block4_pool", "rad_block5_pool"]
+
+    print("backbone")
+    print(backbone)
     try:
         if 'fpn' in backbone:
             radar_outputs = [vgg.get_layer(name).output for name in radar_names]

@@ -38,11 +38,11 @@ if __name__ == "__main__" and not __package__:
 
 # Local imports
 from nuscenes.nuscenes import NuScenes
-from nuscenes.utils.data_classes import RadarPointCloud, Box
+from nuscenes.utils.data_classes import RadarPointCloud, LidarPointCloud, Box
 from nuscenes.utils.geometry_utils import box_in_image, view_points, BoxVisibility, points_in_box
 
 from .generator import Generator
-from ...utils import radar
+from ...utils import radar, lidar
 from ...utils.nuscenes_helper import get_sensor_sample_data, calc_mask
 from ...data_processing.fusion.fusion_projection_lines import create_imagep_visualization
 from ...utils.noise_img import noisy
@@ -61,6 +61,7 @@ class NuscenesGenerator(Generator):
         channels=[0,1,2],
         category_mapping=None,
         radar_input_name=None,
+        lidar_input_name=None,
         radar_width=None,
         image_radar_fusion=True,
         camera_dropout=0.0,
@@ -99,14 +100,17 @@ class NuscenesGenerator(Generator):
         self.dropout_chance = 0.0
         self.radar_sensors = ['RADAR_FRONT']
         self.camera_sensors = ['CAM_FRONT']
+        self.lidar_sensors = ['LIDAR_TOP'] #added
         self.labels = {}
         self.image_data = dict()
         self.classes, self.labels = self._get_class_label_mapping([c['name'] for c in nusc.category], category_mapping)
         self.channels = channels
-        self.radar_channels = [ch for ch in channels if ch >= 3]
+        self.radar_channels = [ch for ch in channels if (ch >= 5 and ch <=18)]
         self.image_channels = [ch for ch in channels if ch < 3]
+        self.lidar_channels = [ch for ch in channels if (ch >= 3 and ch < 5)]
         self.normalize_bbox = False # True for normalizing the bbox to [0,1]
         self.radar_input_name = radar_input_name
+        self.lidar_input_name = lidar_input_name
         self.radar_width = radar_width
         self.radar_dropout = radar_dropout
         self.camera_dropout = camera_dropout
@@ -129,12 +133,16 @@ class NuscenesGenerator(Generator):
 
         # Optional imports
         self.radar_array_creation = None
+        self.lidar_array_creation = None #added
+
         if self._is_image_plus_enabled() or self.camera_dropout > 0.0:
             # Installing vizdom is required
-            from crfnet.data_processing.fusion.fusion_projection_lines import imageplus_creation, create_spatial_point_array
+            from crfnet.data_processing.fusion.fusion_projection_lines import imageplus_creation, create_spatial_point_array, create_spatial_point_array_lidar #added
 
             self.image_plus_creation = imageplus_creation
             self.radar_array_creation = create_spatial_point_array
+            self.lidar_array_creation = create_spatial_point_array_lidar #added
+            
 
         self.noise_filter_threshold = noise_filter_threshold
         self.perfect_noise_filter = perfect_noise_filter
@@ -294,6 +302,29 @@ class NuscenesGenerator(Generator):
         # image_sample = self.load_sample_data(sample, camera_name)
         # return float(image_sample.shape[1]) / float(image_sample.shape[0])
 
+    def load_lidar_array(self, sample_index, target_width): #added
+        # Initialize local variables
+        if not self.lidar_array_creation:
+            from ..raw_data_fusion.fusion_projection_lines import create_spatial_point_array_lidar
+            self.lidar_array_creation = create_spatial_point_array_lidar
+
+        lidar_name = self.lidar_sensors[0]
+        camera_name = self.camera_sensors[0]
+
+        # Gettign data from nuscenes database
+        sample_token = self.sample_tokens[sample_index]
+        sample = self.nusc.get('sample', sample_token)
+
+        # Grab the front camera and the lidar sensor.
+        lidar_token = sample['data'][lidar_name]
+        camera_token = sample['data'][camera_name]
+        image_target_shape = (self.image_min_side, self.image_max_side)
+
+        # Create the array
+        lidar_sample = self.load_sample_data(sample, lidar_name) # Load samples from disk
+        lidar_array = self.lidar_array_creation(self.nusc, lidar_sample, lidar_token, camera_token, target_width=target_width)
+
+        return lidar_array
 
     def load_radar_array(self, sample_index, target_width):
         # Initialize local variables
@@ -337,6 +368,7 @@ class NuscenesGenerator(Generator):
         # Initialize local variables
         radar_name = self.radar_sensors[0]
         camera_name = self.camera_sensors[0]
+        lidar_name = self.lidar_sensors[0] #added
 
         # Gettign data from nuscenes database
         sample_token = self.sample_tokens[image_index]
@@ -345,6 +377,7 @@ class NuscenesGenerator(Generator):
         # Grab the front camera and the radar sensor.
         radar_token = sample['data'][radar_name]
         camera_token = sample['data'][camera_name]
+        lidar_token = sample['data'][lidar_name]
         image_target_shape = (self.image_min_side, self.image_max_side)
 
         # Load the image
@@ -360,6 +393,7 @@ class NuscenesGenerator(Generator):
             kwargs = {
             'pointsensor_token': radar_token,
             'camera_token': camera_token,
+            'lidar_token' : lidar_token,
             'height': (0, self.radar_projection_height), 
             'image_target_shape': image_target_shape,
             'clear_radar': np.random.rand() < self.radar_dropout,
@@ -377,17 +411,24 @@ class NuscenesGenerator(Generator):
                 required_sweep_count = self.n_sweeps
 
             # sd_rec = self.nusc.get('sample_data', sample['data'][sensor_channel])
-            sensor_channel = radar_name
-            pcs, times = RadarPointCloud.from_file_multisweep(self.nusc, sample, sensor_channel, \
-                sensor_channel, nsweeps=required_sweep_count, min_distance=0.0, merge=False)
-            
+            radar_sensor_channel = radar_name
+            lidar_sensor_channel = lidar_name #added
+
+            pcs, times = RadarPointCloud.from_file_multisweep(self.nusc, sample, radar_sensor_channel, \
+                radar_sensor_channel, nsweeps=required_sweep_count, min_distance=0.0, merge=False)
+        
+            pcs_lidar, times = LidarPointCloud.from_file_multisweep(self.nusc, sample, lidar_sensor_channel, \
+                lidar_sensor_channel, nsweeps=required_sweep_count, min_distance=0.0, merge=False)
+        
             
             if self.noise_filter:
                 # fill up with zero sweeps
                 for _ in range(required_sweep_count - len(pcs)):
                     pcs.insert(0, RadarPointCloud(np.zeros(shape=(RadarPointCloud.nbr_dims(), 0))))
+                    pcs_lidar.insert(0, LidarPointCloud(np.zeros(shape=(LidarPointCloud.nbr_dims(), 0))))
 
             radar_sample = [radar.enrich_radar_data(pc.points) for pc in pcs]
+            lidar_sample = [lidar.enrich_lidar_data(pc.points) for pc in pcs_lidar]
             
             if self.noise_filter:
                 ##### Filter the pcs #####
@@ -399,7 +440,10 @@ class NuscenesGenerator(Generator):
                 ##### merge pcs into single radar samples array #####
                 radar_sample = np.concatenate(radar_sample, axis=-1)
 
+            lidar_sample = np.concatenate(lidar_sample, axis=-1)
+
             radar_sample = radar_sample.astype(dtype=np.float32)
+            lidar_sample = lidar_sample.astype(dtype=np.float32)
             
             if self.perfect_noise_filter:
                 cartesian_uncertainty = 0.5 # meters
@@ -410,10 +454,15 @@ class NuscenesGenerator(Generator):
                 radar_gt_mask = calc_mask(nusc=self.nusc, nusc_sample_data=nusc_sample_data, points3d=radar_sample[0:3,:], \
                     tolerance=cartesian_uncertainty, angle_tolerance=angular_uncertainty, \
                     category_selection=category_selection)
+                
+                nusc_sample_data_lidar = self.nusc.get('sample_data', lidar_token)
+                radar_gt_mask = calc_mask(nusc=self.nusc, nusc_sample_data=nusc_sample_data_lidar, points3d=lidar_sample[0:3,:], \
+                    tolerance=cartesian_uncertainty, angle_tolerance=angular_uncertainty, \
+                    category_selection=category_selection)
 
                 # radar_sample = radar_sample[:, radar_gt_mask.astype(np.bool)]
                 radar_sample = np.compress(radar_gt_mask, radar_sample, axis=-1)
-
+                lidar_sample = np.compress(radar_gt_mask, lidar_sample, axis=-1)
 
             if self.normalize_radar:
                 # we need to noramlize
@@ -421,10 +470,9 @@ class NuscenesGenerator(Generator):
                 sigma_factor = int(self.normalize_radar)
                 for ch in range(3, radar_sample.shape[0]): # neural fusion requires x y and z to be not normalized
                     norm_interval = (-127.5,127.5) # caffee mode is default and has these norm interval for img
-                    radar_sample[ch,:] = radar.normalize(ch, radar_sample[ch,:], normalization_interval=norm_interval, sigma_factor=sigma_factor)
-                    
+                    radar_sample[ch,:] = radar.normalize(ch, radar_sample[ch,:], normalization_interval=norm_interval, sigma_factor=sigma_factor) 
             
-            img_p_full = self.image_plus_creation(self.nusc, image_data=image_sample, radar_data=radar_sample, **kwargs)
+            img_p_full = self.image_plus_creation(self.nusc, image_data=image_sample, radar_data=radar_sample, lidar_data=lidar_sample, **kwargs)
             
             # reduce to requested channels
             #self.channels = [ch - 1 for ch in self.channels] # Shift channels by 1, cause we have a weird convetion starting at 1
@@ -587,7 +635,7 @@ class NuscenesGenerator(Generator):
         """
         inputs, targets = super(NuscenesGenerator, self).compute_input_output(group)
 
-        if self.radar_input_name:
+        if self.radar_input_name: #todo
             # Load radar data
             radar_input_batch = []
             for sample_index in group:
@@ -596,9 +644,18 @@ class NuscenesGenerator(Generator):
 
             radar_input_batch = np.array(radar_input_batch)
 
+            # Load lidar data #added
+            lidar_input_batch = []
+            for sample_index in group:
+                lidar_array = self.load_lidar_array(sample_index, target_width=self.radar_width)
+                lidar_input_batch.append(lidar_array)
+
+            lidar_input_batch = np.array(lidar_input_batch)
+
             inputs = {
                 'input_1': inputs,
-                self.radar_input_name: radar_input_batch
+                self.radar_input_name: radar_input_batch,
+                self.lidar_input_name: lidar_input_batch
             }
 
         return inputs, targets

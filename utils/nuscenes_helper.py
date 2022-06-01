@@ -13,9 +13,9 @@ from pyquaternion import Quaternion
 
 # Local libraries
 import nuscenes
-from nuscenes.utils.data_classes import RadarPointCloud, Box
+from nuscenes.utils.data_classes import RadarPointCloud, LidarPointCloud, Box
 from nuscenes.utils.geometry_utils import box_in_image, view_points, BoxVisibility
-from . import radar
+from . import radar, lidar
 
 
 #todo deprecated, delete when radar_generator.py is updated
@@ -89,6 +89,14 @@ def get_sensor_sample_data(nusc, sample, sensor_channel, dtype=np.float32, size=
             [17]: vy_rms (18)
             [18]: distance (19)
 
+    Lidar Format: #added
+        - Shape: 4 x n
+        - Semantics: 
+            [0]: x (1)
+            [1]: y (2)
+            [2]: z (3)
+            [3]: intensity (4)
+
     Image Format:
         - Shape: h x w x 3
         - Channels: RGB
@@ -110,6 +118,11 @@ def get_sensor_sample_data(nusc, sample, sensor_channel, dtype=np.float32, size=
         pc = RadarPointCloud.from_file(file_name)  # Load radar points
         data = pc.points.astype(dtype)
         data = radar.enrich_radar_data(data) # enrich the radar data an bring them into proper format
+        # Read the data
+    elif "LIDAR" in sensor_channel:
+        pc = LidarPointCloud.from_file(file_name)  # Load lidar points
+        data = pc.points.astype(dtype)
+        data = lidar.enrich_lidar_data(data)
     elif "CAM" in sensor_channel:
         i = Image.open(file_name)
 
