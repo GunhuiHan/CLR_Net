@@ -180,12 +180,12 @@ def get_session():
     else:
         if _SESSION is None:
             if not os.environ.get('OMP_NUM_THREADS'):
-                config = tf.ConfigProto(allow_soft_placement=True)
+                config = tf.compat.v1.ConfigProto(allow_soft_placement=True)
             else:
                 num_thread = int(os.environ.get('OMP_NUM_THREADS'))
-                config = tf.ConfigProto(intra_op_parallelism_threads=num_thread,
+                config = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=num_thread,
                                         allow_soft_placement=True)
-            _SESSION = tf.Session(config=config)
+            _SESSION = tf.compat.v1.Session(config=config)
         session = _SESSION
     if not _MANUAL_VAR_INIT:
         with session.graph.as_default():

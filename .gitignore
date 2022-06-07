@@ -6,7 +6,6 @@
 *~
 
 data/
-saved_models/
 output*.png
 *.png
 *.h5
